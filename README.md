@@ -32,6 +32,35 @@ Logs are written to `.ducc-trace/` in the current directory as `.jsonl` files. T
 DUCC_TRACE_DIR=/tmp/logs ducc-trace claude
 ```
 
+## Terminal Monitor Panel
+
+Watch all running agents in real time without opening extra windows.
+
+**Inside a tmux session** — open a right-side panel (30% width):
+
+```bash
+ducc-trace --panel
+```
+
+**Standalone fullscreen monitor:**
+
+```bash
+ducc-trace --monitor
+```
+
+Panel keybindings: `j/k` or arrows to navigate, `Enter` to focus the agent's tmux pane, `r` to refresh, `q` to quit.
+
+Each running agent writes its live status to `~/.ducc-trace/<session>-<pid>.status.json`, which the panel reads every 500 ms. Displayed fields:
+
+- Working directory
+- Current tool and file being operated on
+- Token usage and API call count
+- Last assistant message excerpt
+
+## Multi-agent monitoring (team / omc-team)
+
+When running `claude --team` or `omc-team`, each sub-agent process inherits the interceptor automatically via `NODE_OPTIONS`. Every process gets its own status file named `<session>-<pid>.status.json`, so the panel shows each agent independently.
+
 ## Generate HTML Report
 
 Turn a `.jsonl` log into a readable HTML report:

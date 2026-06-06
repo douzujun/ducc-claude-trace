@@ -3,9 +3,39 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const logDir = path.join(process.env.DUCC_TRACE_DIR || process.cwd(), '.ducc-trace');
 if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+
+// Global status dir shared across all agent instances
+const statusDir = path.join(os.homedir(), '.ducc-trace');
+if (!fs.existsSync(statusDir)) fs.mkdirSync(statusDir, { recursive: true });
+const sessionId = `${process.env.DUCC_SESSION_ID || 'agent'}-${process.pid}`;
+const statusFile = path.join(statusDir, `${sessionId}.status.json`);
+
+let _status = {
+  session: sessionId,
+  cwd: process.cwd(),
+  status: 'running',
+  tokens: 0,
+  calls: 0,
+  tool: null,
+  file: null,
+  lastMsg: null,
+  startedAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+};
+
+function writeStatus(patch) {
+  Object.assign(_status, patch, { updatedAt: new Date().toISOString() });
+  try { fs.writeFileSync(statusFile, JSON.stringify(_status)); } catch {}
+}
+
+writeStatus({});
+process.on('exit', () => writeStatus({ status: 'done' }));
+process.on('SIGINT', () => { writeStatus({ status: 'done' }); process.exit(130); });
+process.on('SIGTERM', () => { writeStatus({ status: 'done' }); process.exit(143); });
 
 const ts = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '-').slice(0, 19);
 const logFile = path.join(logDir, `log-${ts}.jsonl`);
@@ -72,21 +102,50 @@ if (typeof _originalFetch === 'function') {
       }
     } catch { resBody = null; }
 
-    writeEntry({
+    const parsedReq = reqBody ? tryJson(typeof reqBody === 'string' ? reqBody : String(reqBody)) : null;
+    const entry = {
       type: 'fetch',
       timestamp: new Date().toISOString(),
       duration: Date.now() - t0,
       url,
       method,
       requestHeaders: reqHeaders,
-      requestBody: reqBody ? tryJson(typeof reqBody === 'string' ? reqBody : String(reqBody)) : null,
+      requestBody: parsedReq,
       status: response.status,
       responseHeaders: redactHeaders(response.headers),
       responseBody: resBody,
-    });
+    };
+    writeEntry(entry);
+    extractStatus(parsedReq, resBody, url);
 
     return response;
   };
+}
+
+function extractStatus(reqBody, resBody, url) {
+  if (!url || !url.includes('anthropic')) return;
+  const patch = {};
+
+  // token usage
+  const usage = resBody?.usage;
+  if (usage) {
+    const t = (usage.input_tokens || 0) + (usage.output_tokens || 0) + (usage.cache_read_input_tokens || 0);
+    if (t > 0) patch.tokens = (_status.tokens || 0) + t;
+  }
+  patch.calls = (_status.calls || 0) + 1;
+
+  // last assistant message and tool use
+  const msgs = Array.isArray(resBody?.content) ? resBody.content : [];
+  for (const block of msgs) {
+    if (block.type === 'text' && block.text) patch.lastMsg = block.text.slice(0, 200);
+    if (block.type === 'tool_use') {
+      patch.tool = block.name;
+      const inp = block.input;
+      patch.file = inp?.path || inp?.file_path || inp?.command || null;
+    }
+  }
+
+  writeStatus(patch);
 }
 
 // Hook http/https for older clients

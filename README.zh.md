@@ -32,6 +32,35 @@ ducc-trace node my-script.js
 DUCC_TRACE_DIR=/tmp/logs ducc-trace claude
 ```
 
+## 终端监控面板
+
+无需打开多个窗口，在当前终端右侧实时监控所有运行中的 agent。
+
+**在 tmux 会话中** — 在右侧打开监控面板（占 30% 宽度）：
+
+```bash
+ducc-trace --panel
+```
+
+**独立全屏监控：**
+
+```bash
+ducc-trace --monitor
+```
+
+面板快捷键：`j/k` 或方向键切换 agent，`Enter` 聚焦该 agent 所在的 tmux pane，`r` 手动刷新，`q` 退出。
+
+每个运行中的 agent 会将实时状态写入 `~/.ducc-trace/<session>-<pid>.status.json`，面板每 500ms 读取一次，展示以下信息：
+
+- 工作目录
+- 当前正在使用的 tool 及操作的文件
+- Token 消耗量和 API 调用次数
+- 最近一条 assistant 消息摘要
+
+## 多 agent 监控（team / omc-team）
+
+执行 `claude --team` 或 `omc-team` 时，每个子 agent 进程会通过 `NODE_OPTIONS` 自动继承 interceptor。每个进程生成独立的状态文件 `<session>-<pid>.status.json`，面板可同时展示所有子 agent 的工作进度。
+
 ## 生成 HTML 报告
 
 将 `.jsonl` 日志转为可视化 HTML 报告：
