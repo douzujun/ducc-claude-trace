@@ -1,0 +1,15 @@
+{
+  "name": "ducc-trace",
+  "version": "0.1.0",
+  "description": "Intercept and log API traffic for Ducc and any Node.js CLI",
+  "bin": {
+    "ducc-trace": "src/cli.js"
+  },
+  "files": [
+    "src/"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}
