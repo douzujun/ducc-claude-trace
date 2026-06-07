@@ -79,7 +79,8 @@ function readAgents() {
         if (age > KEEP_AFTER_EXIT) { try { fs.unlinkSync(fp); } catch {}; continue; }
         a.displayStatus = 'done';
       } else {
-        a.displayStatus = age < STALE_HOOK_MS ? 'running' : 'done';
+        // If no update for 30s and status is not 'done', treat as interrupted
+        a.displayStatus = age < STALE_HOOK_MS ? 'running' : 'interrupted';
       }
       const sessionKey = `hook-${a.session}`;
       if (!sessions.has(sessionKey)) {
@@ -95,6 +96,13 @@ function readAgents() {
       const sessionKey = base.slice(0, lastDash);
 
       const alive = pidAlive(pid);
+      // Skip processes with no actual activity (e.g., MCP servers)
+      const hasActivity = (a.calls || 0) > 0 || (a.tokens || 0) > 0;
+      if (!hasActivity) {
+        // Clean up inactive files immediately
+        try { fs.unlinkSync(fp); } catch {};
+        continue;
+      }
       if (!alive) {
         const age = now - new Date(a.updatedAt).getTime();
         if (age > KEEP_AFTER_EXIT) { try { fs.unlinkSync(fp); } catch {}; continue; }

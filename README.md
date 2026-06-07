@@ -227,8 +227,26 @@ ducc-trace --help                 show usage
 Both modes write to `~/.ducc-trace/`:
 
 | Mode | Filename | Alive detection |
-|------|----------|----------------|
+|------|----------|-----------------|
 | Hooks | `<session_uuid>.status.json` | `status` field + 30s freshness |
 | Interceptor | `<session>-<pid>.status.json` | `pidAlive(pid)` |
 
 Files from sessions that ended more than 5 minutes ago are cleaned up automatically by the panel.
+
+---
+
+## Status Display
+
+The panel shows different states for each session:
+
+| Status | Icon | Meaning |
+|--------|------|---------|
+| running | `●` | Session is actively processing |
+| done | `✓` | Session completed normally (via `SessionEnd` hook or `done` status) |
+| interrupted | `✗` | Session terminated unexpectedly (window closed, process killed, or timeout) |
+
+### Automatic Cleanup
+
+- Sessions with no actual activity (`tokens=0`, `calls=0`) are filtered out (e.g., MCP server processes)
+- Completed/interrupted sessions are removed after 5 minutes
+- Hook-based sessions without updates for 30 seconds are marked as `interrupted`
