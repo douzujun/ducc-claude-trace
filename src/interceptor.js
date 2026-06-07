@@ -33,9 +33,9 @@ function writeStatus(patch) {
 }
 
 writeStatus({});
-process.on('exit', () => writeStatus({ status: 'done' }));
-process.on('SIGINT', () => { writeStatus({ status: 'done' }); process.exit(130); });
-process.on('SIGTERM', () => { writeStatus({ status: 'done' }); process.exit(143); });
+process.on('exit', () => writeStatus({ status: 'done', doneAt: new Date().toISOString() }));
+process.on('SIGINT', () => { writeStatus({ status: 'done', doneAt: new Date().toISOString() }); process.exit(130); });
+process.on('SIGTERM', () => { writeStatus({ status: 'done', doneAt: new Date().toISOString() }); process.exit(143); });
 
 const ts = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '-').slice(0, 19);
 const logFile = path.join(logDir, `log-${ts}.jsonl`);
@@ -86,14 +86,69 @@ if (typeof _originalFetch === 'function') {
     const contentType = response.headers.get('content-type') || '';
     let resBody;
 
+    const parsedReq = reqBody ? tryJson(typeof reqBody === 'string' ? reqBody : String(reqBody)) : null;
+
+    // extract userInput from request regardless of response type
+    if (parsedReq && url && url.includes('anthropic')) {
+      const msgs = Array.isArray(parsedReq.messages) ? parsedReq.messages : [];
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role === 'user') {
+          const c = msgs[i].content;
+          const text = Array.isArray(c)
+            ? c.filter(b => b.type === 'text').map(b => b.text).join(' ')
+            : String(c || '');
+          if (text.trim()) { writeStatus({ userInput: text.trim().slice(0, 300) }); break; }
+        }
+      }
+    }
+
     try {
       if (contentType.includes('text/event-stream')) {
         const reader = clone.body.getReader();
         const parts = [];
+        // SSE state machine for real-time tool tracking
+        let currentTool = null;
+        let inputBuffer = '';
+
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          parts.push(Buffer.from(value).toString('utf8'));
+          const chunk = Buffer.from(value).toString('utf8');
+          parts.push(chunk);
+
+          for (const line of chunk.split('\n')) {
+            if (!line.startsWith('data: ')) continue;
+            const data = tryJson(line.slice(6));
+            if (!data || typeof data !== 'object') continue;
+
+            if (data.type === 'message_start' && data.message?.usage) {
+              const u = data.message.usage;
+              const t = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0);
+              if (t > 0) writeStatus({ tokens: (_status.tokens || 0) + t, calls: (_status.calls || 0) + 1 });
+            }
+            if (data.type === 'content_block_start' && data.content_block?.type === 'tool_use') {
+              currentTool = { name: data.content_block.name };
+              inputBuffer = '';
+            }
+            if (data.type === 'content_block_delta' && data.delta?.type === 'input_json_delta' && currentTool) {
+              inputBuffer += data.delta.partial_json || '';
+            }
+            if (data.type === 'content_block_stop' && currentTool) {
+              const inp = tryJson(inputBuffer) || {};
+              const file = inp.path || inp.file_path || inp.command || null;
+              const toolHistory = Array.isArray(_status.toolHistory) ? _status.toolHistory : [];
+              toolHistory.unshift({ tool: currentTool.name, file: file ? String(file).slice(0, 80) : null, ts: new Date().toISOString() });
+              if (toolHistory.length > 8) toolHistory.length = 8;
+              writeStatus({ tool: currentTool.name, file: file ? String(file).slice(0, 80) : null, toolHistory });
+              currentTool = null;
+              inputBuffer = '';
+            }
+            if (data.type === 'message_delta' && data.usage) {
+              const u = data.usage;
+              const t = (u.output_tokens || 0);
+              if (t > 0) writeStatus({ tokens: (_status.tokens || 0) + t });
+            }
+          }
         }
         resBody = parts.join('');
       } else {
@@ -102,7 +157,6 @@ if (typeof _originalFetch === 'function') {
       }
     } catch { resBody = null; }
 
-    const parsedReq = reqBody ? tryJson(typeof reqBody === 'string' ? reqBody : String(reqBody)) : null;
     const entry = {
       type: 'fetch',
       timestamp: new Date().toISOString(),
@@ -116,7 +170,8 @@ if (typeof _originalFetch === 'function') {
       responseBody: resBody,
     };
     writeEntry(entry);
-    extractStatus(parsedReq, resBody, url);
+    // for non-SSE responses (and to capture userInput / lastMsg)
+    if (!contentType.includes('text/event-stream')) extractStatus(parsedReq, resBody, url);
 
     return response;
   };
@@ -134,16 +189,33 @@ function extractStatus(reqBody, resBody, url) {
   }
   patch.calls = (_status.calls || 0) + 1;
 
-  // last assistant message and tool use
-  const msgs = Array.isArray(resBody?.content) ? resBody.content : [];
-  for (const block of msgs) {
+  // last user message from request
+  const msgs = Array.isArray(reqBody?.messages) ? reqBody.messages : [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === 'user') {
+      const c = msgs[i].content;
+      const text = Array.isArray(c)
+        ? c.filter(b => b.type === 'text').map(b => b.text).join(' ')
+        : String(c || '');
+      if (text.trim()) { patch.userInput = text.trim().slice(0, 300); break; }
+    }
+  }
+
+  // assistant tool calls + last text message
+  const content = Array.isArray(resBody?.content) ? resBody.content : [];
+  const toolHistory = Array.isArray(_status.toolHistory) ? _status.toolHistory : [];
+  for (const block of content) {
     if (block.type === 'text' && block.text) patch.lastMsg = block.text.slice(0, 200);
     if (block.type === 'tool_use') {
       patch.tool = block.name;
       const inp = block.input;
       patch.file = inp?.path || inp?.file_path || inp?.command || null;
+      // prepend to history, keep last 8
+      toolHistory.unshift({ tool: block.name, file: patch.file || null, ts: new Date().toISOString() });
+      if (toolHistory.length > 8) toolHistory.length = 8;
     }
   }
+  if (toolHistory.length) patch.toolHistory = toolHistory;
 
   writeStatus(patch);
 }

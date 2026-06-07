@@ -1,6 +1,6 @@
 {
   "name": "ducc-trace",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Intercept and log API traffic for Ducc and any Node.js CLI",
   "bin": {
     "ducc-trace": "src/cli.js"

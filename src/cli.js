@@ -43,20 +43,18 @@ if (args[0] === '--report-all') {
 // --monitor: standalone fullscreen monitor
 if (args[0] === '--monitor') {
   require('./panel');
-  process.exit(0);
+  return;
 }
 
-// --panel: open a right tmux pane showing the monitor
+// --panel: open a right tmux pane showing the monitor; fallback to fullscreen
 if (args[0] === '--panel') {
   if (!process.env.TMUX) {
-    console.error('[ducc-trace] --panel requires tmux. Start a tmux session first.');
-    process.exit(1);
+    require('./panel');
+    return;
   }
   const panelScript = path.join(__dirname, 'panel.js');
   try {
-    // Split right pane (30% width), run panel.js there with DUCC_PANEL_MODE=1
     execSync(`tmux split-window -h -p 30 -d "DUCC_PANEL_MODE=1 node ${panelScript}"`);
-    console.log('[ducc-trace] monitor panel opened in right pane');
   } catch (e) {
     console.error('[ducc-trace] failed to open panel:', e.message);
     process.exit(1);
@@ -71,8 +69,22 @@ const env = {
   DUCC_SESSION_ID: sessionId,
 };
 
+// Auto-open monitor panel in tmux (right pane); skip silently if not in tmux
+let panelPid = null;
+if (!process.env.DUCC_PANEL_MODE && process.env.TMUX) {
+  const panelScript = path.join(__dirname, 'panel.js');
+  const panelRunning = (() => { try { return execSync('pgrep -f "node.*panel.js" || true').toString().trim(); } catch { return ''; } })();
+  if (!panelRunning) {
+    try {
+      execSync(`tmux split-window -h -p 25 -d "DUCC_PANEL_MODE=1 node ${panelScript}"`);
+      panelPid = execSync('pgrep -f "node.*panel.js" || true').toString().trim();
+    } catch {}
+  }
+}
+
 const child = spawn(args[0], args.slice(1), { env, stdio: 'inherit', shell: false });
 child.on('exit', (code, signal) => {
+  if (panelPid) try { process.kill(Number(panelPid), 'SIGTERM'); } catch {}
   if (signal) process.kill(process.pid, signal);
   else process.exit(code ?? 0);
 });
