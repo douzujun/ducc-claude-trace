@@ -13,14 +13,84 @@ if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
   console.log(`Usage: ducc-trace <command> [args...]
        ducc-trace --report [log-file.jsonl]
        ducc-trace --report-all
-       ducc-trace --panel         open monitor panel (right tmux pane)
-       ducc-trace --monitor       standalone fullscreen monitor
+       ducc-trace --panel              open monitor panel (right tmux pane)
+       ducc-trace --monitor            standalone fullscreen monitor
+       ducc-trace --install-hooks      register hooks into ~/.claude/settings.json
+       ducc-trace --uninstall-hooks    remove hooks from ~/.claude/settings.json
 
 Examples:
-  ducc-trace kiro-cli chat
   ducc-trace claude
-  ducc-trace --panel`);
+  ducc-trace --install-hooks
+  ducc-trace --monitor`);
   process.exit(0);
+}
+
+if (args[0] === '--install-hooks') {
+  installHooks();
+  process.exit(0);
+}
+
+if (args[0] === '--uninstall-hooks') {
+  uninstallHooks();
+  process.exit(0);
+}
+
+function installHooks() {
+  const hooksDir = path.join(os.homedir(), '.claude', 'hooks');
+  if (!fs.existsSync(hooksDir)) fs.mkdirSync(hooksDir, { recursive: true });
+
+  const hookSrc = path.join(__dirname, 'hook.js');
+  const hookDst = path.join(hooksDir, 'ducc-trace-hook.js');
+  fs.copyFileSync(hookSrc, hookDst);
+  console.log(`[ducc-trace] hook installed: ${hookDst}`);
+
+  const settingsFile = path.join(os.homedir(), '.claude', 'settings.json');
+  let settings = {};
+  try { settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8')); } catch {}
+
+  if (!settings.hooks) settings.hooks = {};
+
+  const hookCmd = `env -u NODE_OPTIONS node ${hookDst}`;
+  const preEntry = { matcher: '', hooks: [{ type: 'command', command: hookCmd }] };
+  const endEntry = { hooks: [{ type: 'command', command: hookCmd }] };
+
+  // PreToolUse
+  if (!Array.isArray(settings.hooks.PreToolUse)) settings.hooks.PreToolUse = [];
+  const alreadyPre = settings.hooks.PreToolUse.some(e => e.hooks?.some(h => h.command === hookCmd));
+  if (!alreadyPre) settings.hooks.PreToolUse.push(preEntry);
+
+  // SessionEnd
+  if (!Array.isArray(settings.hooks.SessionEnd)) settings.hooks.SessionEnd = [];
+  const alreadyEnd = settings.hooks.SessionEnd.some(e => e.hooks?.some(h => h.command === hookCmd));
+  if (!alreadyEnd) settings.hooks.SessionEnd.push(endEntry);
+
+  fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+  console.log(`[ducc-trace] hooks registered in ${settingsFile}`);
+  console.log('[ducc-trace] restart claude/ducc for hooks to take effect');
+}
+
+function uninstallHooks() {
+  const hookDst = path.join(os.homedir(), '.claude', 'hooks', 'ducc-trace-hook.js');
+  const settingsFile = path.join(os.homedir(), '.claude', 'settings.json');
+
+  let settings = {};
+  try { settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8')); } catch {}
+
+  if (settings.hooks) {
+    for (const event of ['PreToolUse', 'SessionEnd', 'PostToolUse']) {
+      if (Array.isArray(settings.hooks[event])) {
+        settings.hooks[event] = settings.hooks[event].filter(
+          e => !e.hooks?.some(h => h.command?.includes('ducc-trace-hook.js'))
+        );
+        if (settings.hooks[event].length === 0) delete settings.hooks[event];
+      }
+    }
+    if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
+    fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+    console.log(`[ducc-trace] hooks removed from ${settingsFile}`);
+  }
+
+  try { fs.unlinkSync(hookDst); console.log(`[ducc-trace] removed ${hookDst}`); } catch {}
 }
 
 if (args[0] === '--report') {

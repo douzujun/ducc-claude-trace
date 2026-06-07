@@ -57,46 +57,64 @@ function toolIcon(name) {
 }
 
 // Read all status files and group sub-processes by session prefix
-// filename: <sessionId>-<pid>.status.json  where sessionId = "<ts>-<parentPid>"
+// interceptor files: <ts>-<parentPid>-<pid>.status.json
+// hook files:        <session_uuid>.status.json  (source: "hook")
+const STALE_HOOK_MS = 30 * 1000; // treat hook session as done if no update in 30s
+
 function readAgents() {
   if (!fs.existsSync(DIR)) return [];
   const now = Date.now();
-  // group by session (everything before the last dash = pid)
-  const sessions = new Map(); // sessionKey → {representative, pids[], allAlive, anyAlive}
+  const sessions = new Map();
 
   for (const f of fs.readdirSync(DIR).filter(f => f.endsWith('.status.json'))) {
     const fp = path.join(DIR, f);
     let a;
     try { a = JSON.parse(fs.readFileSync(fp, 'utf8')); } catch { continue; }
-
-    const base = f.replace('.status.json', '');
-    const lastDash = base.lastIndexOf('-');
-    const pid = base.slice(lastDash + 1);
-    const sessionKey = base.slice(0, lastDash); // e.g. "1780825727895-84974"
-
-    const alive = pidAlive(pid);
-    if (!alive) {
-      const age = now - new Date(a.updatedAt).getTime();
-      if (age > KEEP_AFTER_EXIT) { try { fs.unlinkSync(fp); } catch {}; continue; }
-      a.displayStatus = a.status === 'done' ? 'done' : 'interrupted';
-    } else {
-      a.displayStatus = 'running';
-    }
-    a._pid = pid;
     a._file = fp;
 
-    if (!sessions.has(sessionKey)) {
-      sessions.set(sessionKey, { rep: a, pids: [pid], allDone: true, anyRunning: false, anyInterrupted: false });
-    } else {
+    if (a.source === 'hook') {
+      // hook-based: no pid, use status field + freshness
+      const age = now - new Date(a.updatedAt).getTime();
+      if (a.status === 'done') {
+        if (age > KEEP_AFTER_EXIT) { try { fs.unlinkSync(fp); } catch {}; continue; }
+        a.displayStatus = 'done';
+      } else {
+        a.displayStatus = age < STALE_HOOK_MS ? 'running' : 'done';
+      }
+      const sessionKey = `hook-${a.session}`;
+      if (!sessions.has(sessionKey)) {
+        sessions.set(sessionKey, { rep: a, pids: [], allDone: true, anyRunning: false, anyInterrupted: false });
+      }
       const s = sessions.get(sessionKey);
-      s.pids.push(pid);
-      // prefer the one with more info as representative
-      if ((a.calls || 0) > (s.rep.calls || 0) || a.userInput) s.rep = a;
+      if (a.displayStatus === 'running') { s.anyRunning = true; s.allDone = false; }
+    } else {
+      // interceptor-based: pid in filename
+      const base = f.replace('.status.json', '');
+      const lastDash = base.lastIndexOf('-');
+      const pid = base.slice(lastDash + 1);
+      const sessionKey = base.slice(0, lastDash);
+
+      const alive = pidAlive(pid);
+      if (!alive) {
+        const age = now - new Date(a.updatedAt).getTime();
+        if (age > KEEP_AFTER_EXIT) { try { fs.unlinkSync(fp); } catch {}; continue; }
+        a.displayStatus = a.status === 'done' ? 'done' : 'interrupted';
+      } else {
+        a.displayStatus = 'running';
+      }
+      a._pid = pid;
+
+      if (!sessions.has(sessionKey)) {
+        sessions.set(sessionKey, { rep: a, pids: [pid], allDone: true, anyRunning: false, anyInterrupted: false });
+      } else {
+        const s = sessions.get(sessionKey);
+        s.pids.push(pid);
+        if ((a.calls || 0) > (s.rep.calls || 0) || a.userInput) s.rep = a;
+      }
+      const s = sessions.get(sessionKey);
+      if (a.displayStatus === 'running')     { s.anyRunning = true; s.allDone = false; }
+      if (a.displayStatus === 'interrupted') { s.anyInterrupted = true; s.allDone = false; }
     }
-    const s = sessions.get(sessionKey);
-    if (a.displayStatus === 'running')     { s.anyRunning = true; s.allDone = false; }
-    if (a.displayStatus === 'interrupted') { s.anyInterrupted = true; s.allDone = false; }
-    if (a.displayStatus === 'done')        { /* allDone stays true if only done */ }
   }
 
   // Build final agent list — one entry per session
